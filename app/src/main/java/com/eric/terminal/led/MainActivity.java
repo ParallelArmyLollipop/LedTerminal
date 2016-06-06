@@ -1,14 +1,15 @@
 package com.eric.terminal.led;
 
 import android.content.res.XmlResourceParser;
-import android.os.Environment;
-import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
+import android.support.v7.app.AppCompatActivity;
+import android.util.Log;
 import android.util.Xml;
 
 import com.eric.terminal.led.Bean.MediaBean;
 import com.eric.terminal.led.Bean.SystemBean;
 import com.eric.terminal.led.Bean.TaskBean;
+import com.orhanobut.logger.Logger;
 import com.shiki.utils.StringUtils;
 
 import org.xmlpull.v1.XmlPullParser;
@@ -20,7 +21,14 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
-import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import rx.Observable;
+import rx.Observer;
+import rx.Subscriber;
+import rx.functions.Action0;
+import rx.functions.Action1;
+import rx.schedulers.Schedulers;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -28,8 +36,56 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        Logger.init();
+        Logger.d("MainActivity onCreate");
 
-        String path1 = Environment.getExternalStorageDirectory().getPath()+"/Download/system.xml";
+        Observable.interval(5, TimeUnit.SECONDS)
+                .subscribe(new Observer<Long>() {
+                    @Override
+                    public void onCompleted() {
+                        Log.d("MainActivity","completed");
+                    }
+
+                    @Override
+                    public void onError(Throwable e) {
+                        Log.d("MainActivity","error");
+                    }
+
+                    @Override
+                    public void onNext(Long number) {
+                        //Log.d("MainActivity","hello world…."+number);
+                        Logger.d("hello world…."+number);
+                    }
+                });
+
+
+        Observable.create(new Observable.OnSubscribe<String>() {
+            @Override
+            public void call(final Subscriber<? super String> observer) {
+
+                Schedulers.newThread().createWorker()
+                        .schedulePeriodically(new Action0() {
+                            @Override
+                            public void call() {
+                                observer.onNext("1");
+                            }
+                        }, 0, 5, TimeUnit.SECONDS);
+            }
+        }).subscribe(new Action1<String>() {
+            @Override
+            public void call(String s) {
+                Log.d("MainActivity","polling…."+s);
+            }
+        }) ;
+
+        /*Observable.timer(2, TimeUnit.SECONDS).subscribe(new Action1<Long>() {
+            @Override
+            public void call(Long aLong) {
+
+            }
+        });*/
+
+        /*String path1 = Environment.getExternalStorageDirectory().getPath()+"/Download/system.xml";
         File file1 = new File(path1);
 
         SystemBean systemBean = pullXmlParseSystem(file1);
@@ -38,7 +94,7 @@ public class MainActivity extends AppCompatActivity {
 
         String path2 = Environment.getExternalStorageDirectory().getPath()+"/Download/media.xml";
         File file2 = new File(path2);
-        MediaBean mediaBean = pullXmlParseMedia(file2);
+        MediaBean mediaBean = pullXmlParseMedia(file2);*/
     }
 
     public SystemBean pullXmlParseSystem(File file){
