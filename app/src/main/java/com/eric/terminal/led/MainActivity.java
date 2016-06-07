@@ -2,14 +2,20 @@ package com.eric.terminal.led;
 
 import android.content.res.XmlResourceParser;
 import android.os.Bundle;
+import android.os.Environment;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.util.Xml;
 
+import com.eric.terminal.led.Manager.ApiManager;
 import com.eric.terminal.led.Bean.MediaBean;
 import com.eric.terminal.led.Bean.SystemBean;
 import com.eric.terminal.led.Bean.TaskBean;
 import com.orhanobut.logger.Logger;
+import com.shiki.okttp.OkHttpUtils;
+import com.shiki.okttp.callback.FileCallback;
+import com.shiki.okttp.callback.StringCallback;
+import com.shiki.utils.DateUtils;
 import com.shiki.utils.StringUtils;
 
 import org.xmlpull.v1.XmlPullParser;
@@ -18,11 +24,21 @@ import org.xmlpull.v1.XmlPullParserException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.concurrent.TimeUnit;
 
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.FormBody;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 import rx.Observable;
 import rx.Observer;
 import rx.Subscriber;
@@ -31,6 +47,7 @@ import rx.functions.Action1;
 import rx.schedulers.Schedulers;
 
 public class MainActivity extends AppCompatActivity {
+    OkHttpClient mClient = new OkHttpClient();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -39,7 +56,46 @@ public class MainActivity extends AppCompatActivity {
         Logger.init();
         Logger.d("MainActivity onCreate");
 
-        Observable.interval(5, TimeUnit.SECONDS)
+        final String fileDir = Environment.getExternalStorageDirectory().getPath()+"/Download/";
+        String mediaFileName = "media-new.xml";
+        final String systemFileName = "system-new.xml";
+
+
+        /*OkHttpUtils.get().addParams("id","2016060001").url(ApiManager.GET_CONFIG).build().execute(new FileCallback(fileDir,systemFileName) {
+            @Override
+            public void inProgress(float progress) {
+                Logger.d("OkHttpUtils "+progress);
+            }
+
+            @Override
+            public void onError(Call call, Exception e) {
+                Logger.d("OkHttpUtils "+e.getMessage());
+            }
+
+            @Override
+            public void onResponse(File response) {
+                Logger.d("OkHttpUtils "+response.getName()+"----"+response.getPath());
+            }
+        });
+
+        OkHttpUtils.get().addParams("id","2016060001").url(ApiManager.GET_PLAY_LIST_3).build().execute(new FileCallback(fileDir,mediaFileName) {
+            @Override
+            public void inProgress(float progress) {
+                Logger.d("OkHttpUtils "+progress);
+            }
+
+            @Override
+            public void onError(Call call, Exception e) {
+                Logger.d("OkHttpUtils "+e.getMessage());
+            }
+
+            @Override
+            public void onResponse(File response) {
+                Logger.d("OkHttpUtils "+response.getName()+"----"+response.getPath());
+            }
+        });*/
+
+        Observable.interval(10, TimeUnit.SECONDS).subscribeOn(Schedulers.newThread())
                 .subscribe(new Observer<Long>() {
                     @Override
                     public void onCompleted() {
@@ -55,11 +111,112 @@ public class MainActivity extends AppCompatActivity {
                     public void onNext(Long number) {
                         //Log.d("MainActivity","hello world…."+number);
                         Logger.d("hello world…."+number);
+
+                        FormBody body = new FormBody.Builder().add("id", "2016060001")
+                                .add("cp", "1.0.0")
+                                .add("cuuid", "1347b284-668f-4853-b9f8-ee6e0108b4b3")
+                                .add("datetime", String.valueOf(DateUtils.getMillis(new Date()))).build();
+                        Request request = new Request.Builder()
+                                .url(ApiManager.GET_CONNECTION)
+                                .post(body)
+                                .build();
+                        /*client.newCall(request).enqueue(new Callback() {
+                            @Override
+                            public void onFailure(Call call, IOException e) {
+                                Logger.d("GET_CONNECTION " + e.getMessage());
+                            }
+
+                            @Override
+                            public void onResponse(Call call, Response response) throws IOException {
+                                Logger.d("GET_CONNECTION " + response.body().toString());
+                            }
+                        });*/
+                        Response response = null;
+                        try {
+                            response = mClient.newCall(request).execute();
+                            if (response.isSuccessful()) {
+                                Logger.d("GET_CONNECTION " + response.body().string());
+                            } else {
+                                throw new IOException("Unexpected code " + response);
+                            }
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+
+
+                        //body = new FormBody.Builder().add("id", "2016060001").build();
+                        request = new Request.Builder()
+                                .url(ApiManager.GET_CONFIG+"?id=2016060001")
+                                .build();
+                        response = null;
+                        try {
+                            response = mClient.newCall(request).execute();
+                            if(response.isSuccessful()){
+                                Logger.d("OkHttpUtils execute "+response.code());
+                                //Logger.d("OkHttpUtils execute "+response.body().contentLength());
+                                InputStream is = null;
+                                byte[] buf = new byte[2048];
+                                int len = 0;
+                                FileOutputStream fos = null;
+                                try {
+                                    is = response.body().byteStream();
+                                    final long total = response.body().contentLength();
+                                    long sum = 0;
+                                    File dir = new File(fileDir);
+                                    if (!dir.exists()) {
+                                        dir.mkdirs();
+                                    }
+                                    File file = new File(dir, systemFileName);
+                                    fos = new FileOutputStream(file);
+                                    while ((len = is.read(buf)) != -1) {
+                                        sum += len;
+                                        fos.write(buf, 0, len);
+                                        final long finalSum = sum;
+                                        Logger.d("OkHttpUtils execute "+finalSum * 1.0f / total);
+
+                                    }
+                                    fos.flush();
+                                } finally {
+                                    try {
+                                        if (is != null) is.close();
+                                    } catch (IOException e) {
+                                    }
+                                    try {
+                                        if (fos != null) fos.close();
+                                    } catch (IOException e) {
+                                    }
+                                }
+                            }else{
+                                Logger.d("OkHttpUtils execute "+response.isSuccessful());
+                            }
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+
+
+                        /*OkHttpUtils.post()
+                                .addParams("id", "2016060001")
+                                .addParams("cp", "1.0.0")
+                                .addParams("cuuid", "1347b284-668f-4853-b9f8-ee6e0108b4b3")
+                                .addParams("datetime", String.valueOf(DateUtils.getMillis(new Date())))
+                                .url(ApiManager.GET_CONNECTION)
+                                .build()
+                                .execute(new StringCallback() {
+                                    @Override
+                                    public void onError(Call call, Exception e) {
+                                        Logger.d("GET_CONNECTION " + e.getMessage());
+                                    }
+
+                                    @Override
+                                    public void onResponse(String response) {
+                                        Logger.d("GET_CONNECTION " + response);
+                                    }
+                                });*/
                     }
                 });
 
 
-        Observable.create(new Observable.OnSubscribe<String>() {
+        /*Observable.create(new Observable.OnSubscribe<String>() {
             @Override
             public void call(final Subscriber<? super String> observer) {
 
@@ -76,7 +233,7 @@ public class MainActivity extends AppCompatActivity {
             public void call(String s) {
                 Log.d("MainActivity","polling…."+s);
             }
-        }) ;
+        }) ;*/
 
         /*Observable.timer(2, TimeUnit.SECONDS).subscribe(new Action1<Long>() {
             @Override
