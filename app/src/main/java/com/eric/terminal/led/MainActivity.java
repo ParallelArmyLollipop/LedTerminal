@@ -1,64 +1,267 @@
 package com.eric.terminal.led;
 
-import android.content.res.XmlResourceParser;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.media.MediaPlayer;
 import android.os.Bundle;
 import android.os.Environment;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
-import android.util.Xml;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
+import android.view.View;
+import android.widget.ImageView;
 
-import com.eric.terminal.led.Manager.ApiManager;
 import com.eric.terminal.led.Bean.MediaBean;
 import com.eric.terminal.led.Bean.SystemBean;
 import com.eric.terminal.led.Bean.TaskBean;
+import com.eric.terminal.led.Manager.ApiManager;
+import com.eric.terminal.led.Manager.Constants;
+import com.eric.terminal.led.Manager.XmlPullManager;
 import com.orhanobut.logger.Logger;
-import com.shiki.okttp.OkHttpUtils;
-import com.shiki.okttp.callback.FileCallback;
-import com.shiki.okttp.callback.StringCallback;
+import com.shiki.utils.ApkUtils;
 import com.shiki.utils.DateUtils;
-import com.shiki.utils.StringUtils;
-
-import org.xmlpull.v1.XmlPullParser;
-import org.xmlpull.v1.XmlPullParserException;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.reflect.Field;
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.concurrent.TimeUnit;
 
-import okhttp3.Call;
-import okhttp3.Callback;
+import butterknife.Bind;
+import butterknife.ButterKnife;
 import okhttp3.FormBody;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
-import okhttp3.RequestBody;
 import okhttp3.Response;
 import rx.Observable;
 import rx.Observer;
-import rx.Subscriber;
-import rx.functions.Action0;
+import rx.android.schedulers.AndroidSchedulers;
 import rx.functions.Action1;
+import rx.functions.Func1;
 import rx.schedulers.Schedulers;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends AppCompatActivity implements SurfaceHolder.Callback,MediaPlayer.OnCompletionListener
+        ,MediaPlayer.OnErrorListener,MediaPlayer.OnInfoListener,MediaPlayer.OnPreparedListener
+        ,MediaPlayer.OnSeekCompleteListener,MediaPlayer.OnVideoSizeChangedListener {
+    @Bind(R.id.iv_main)
+    ImageView mIvMain;
+    @Bind(R.id.video_surface)
+    SurfaceView mVideoSurface;
+    private SurfaceHolder mHolder;
+
+    String mEquipId = "2016060001";
+    String mMediaFileName = "media.xml";
+    String mSystemFileName = "system.xml";
+    String mMediaFileNameNew = "media-new.xml";
+    String mSystemFileNameNew = "system-new.xml";
+    String mBaseFileDir;
+    SystemBean mSystemBean;
+    MediaBean mMediaBean;
+    MediaPlayer mPlayer;
+
+    int mPosition;
+    long mMediaStartTime;
+
     OkHttpClient mClient = new OkHttpClient();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        ButterKnife.bind(this);
         Logger.init();
-        Logger.d("MainActivity onCreate");
 
-        final String fileDir = Environment.getExternalStorageDirectory().getPath()+"/Download/";
+        //给SurfaceView添加CallBack监听
+        mHolder = mVideoSurface.getHolder();
+        mHolder.addCallback(this);
+        //为了可以播放视频或者使用Camera预览，我们需要指定其Buffer类型
+        mHolder.setType(SurfaceHolder.SURFACE_TYPE_PUSH_BUFFERS);
+
+        //下面开始实例化MediaPlayer对象
+        mPlayer = new MediaPlayer();
+        mPlayer.setOnCompletionListener(this);
+        mPlayer.setOnErrorListener(this);
+        mPlayer.setOnInfoListener(this);
+        mPlayer.setOnPreparedListener(this);
+        mPlayer.setOnSeekCompleteListener(this);
+        mPlayer.setOnVideoSizeChangedListener(this);
+
+        //首先先读取默认配置文件
+        mBaseFileDir = Environment.getExternalStorageDirectory().getAbsolutePath();
+        File baseFileDir = new File(mBaseFileDir);
+        if (!baseFileDir.exists()) {
+            baseFileDir.mkdirs();
+        }
+        File mediaFile = new File(mBaseFileDir, mMediaFileName);
+        File systemFile = new File(mBaseFileDir, mSystemFileName);
+        if (mediaFile.exists() && systemFile.exists()) {
+            mSystemBean = XmlPullManager.pullXmlParseSystem(systemFile);
+            mMediaBean = XmlPullManager.pullXmlParseMedia(mediaFile);
+        } else {
+            mSystemBean = XmlPullManager.pullXmlParseSystem(this, R.xml.system);
+            mMediaBean = XmlPullManager.pullXmlParseMedia(this, R.xml.media);
+        }
+
+        //播放默认配置文件中媒体
+        if(mMediaBean!=null){
+            //设置任务style（暂时全部全屏）
+            switch (mMediaBean.getStyle()){
+                case Constants.TASK_STYLE.FULL_SCREEN:
+                    break;
+                default:
+                    break;
+            }
+
+            for(int i=0;i<mMediaBean.getTaskList().size();i++){
+                TaskBean tb = mMediaBean.getTaskList().get(i);
+                String fileName = tb.getUuid() + ".avi";
+                if(tb.getType().equalsIgnoreCase(Constants.TASK_TYPE.JPEG)){
+                    fileName = tb.getUuid() + "." + tb.getType();
+                }
+                File file = new File(mBaseFileDir,fileName);
+                if(file.exists()){
+                    mPosition = i;
+                    mMediaStartTime = DateUtils.getMillis(new Date());
+                    if(tb.getType().equalsIgnoreCase(Constants.TASK_TYPE.JPEG)){
+                        mVideoSurface.setVisibility(View.GONE);
+                        mIvMain.setVisibility(View.VISIBLE);
+                        Bitmap bm = BitmapFactory.decodeFile(mBaseFileDir+File.separator+fileName);
+                        mIvMain.setImageBitmap(bm);
+                    }else if(tb.getType().equalsIgnoreCase(Constants.TASK_TYPE.VIDEO)){
+                        mVideoSurface.setVisibility(View.VISIBLE);
+                        mIvMain.setVisibility(View.GONE);
+                        try {
+                            mPlayer.setDataSource(mBaseFileDir+File.separator+fileName);
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        //起心跳获取是否需要更新
+        startHeartbeat();
+        /*Observable.interval(0, 60, TimeUnit.SECONDS).subscribeOn(Schedulers.newThread())
+                .subscribe(new Observer<Long>() {
+                    @Override
+                    public void onCompleted() {
+                    }
+
+                    @Override
+                    public void onError(Throwable e) {
+                    }
+
+                    @Override
+                    public void onNext(Long number) {
+                        Logger.d("hello world…." + number);
+
+                        FormBody body = new FormBody.Builder().add("id", mEquipId)
+                                .add("cp", ApkUtils.getVersionName(MainActivity.this))
+                                .add("cuuid", mMediaBean.getTaskList().get(mPosition).getUuid())
+                                .add("datetime", String.valueOf(mMediaStartTime)).build();
+                        Request request = new Request.Builder()
+                                .url(ApiManager.GET_CONNECTION)
+                                .post(body)
+                                .build();
+                        Response response = null;
+                        try {
+                            response = mClient.newCall(request).execute();
+                            if (response.isSuccessful()) {
+                                Logger.d("GET_CONNECTION " + response.body().string());
+                                this.onCompleted();
+                                //解析心跳结果
+                                String result = response.body().string();
+                                if(result.length() == 3){
+                                    if(result.substring(2).equalsIgnoreCase("1")){
+                                        //走更新流程
+                                        update();
+                                    }
+                                }
+                            }
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+
+
+                        body = new FormBody.Builder().add("id", "2016060001").build();
+                        request = new Request.Builder()
+                                .url(ApiManager.GET_CONFIG + "?id=2016060001")
+                                .build();
+                        response = null;
+                        try {
+                            response = mClient.newCall(request).execute();
+                            if (response.isSuccessful()) {
+                                Logger.d("OkHttpUtils execute " + response.code());
+                                //Logger.d("OkHttpUtils execute "+response.body().contentLength());
+                                InputStream is = null;
+                                byte[] buf = new byte[2048];
+                                int len = 0;
+                                FileOutputStream fos = null;
+                                try {
+                                    is = response.body().byteStream();
+                                    final long total = response.body().contentLength();
+                                    long sum = 0;
+                                    File dir = new File(fileDir);
+                                    if (!dir.exists()) {
+                                        dir.mkdirs();
+                                    }
+                                    File file = new File(dir, systemFileName);
+                                    fos = new FileOutputStream(file);
+                                    while ((len = is.read(buf)) != -1) {
+                                        sum += len;
+                                        fos.write(buf, 0, len);
+                                        final long finalSum = sum;
+                                        Logger.d("OkHttpUtils execute " + finalSum * 1.0f / total);
+
+                                    }
+                                    fos.flush();
+                                } finally {
+                                    try {
+                                        if (is != null) is.close();
+                                    } catch (IOException e) {
+                                    }
+                                    try {
+                                        if (fos != null) fos.close();
+                                    } catch (IOException e) {
+                                    }
+                                }
+                            } else {
+                                Logger.d("OkHttpUtils execute " + response.isSuccessful());
+                            }
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }*//*
+
+
+                        *//*OkHttpUtils.post()
+                                .addParams("id", "2016060001")
+                                .addParams("cp", "1.0.0")
+                                .addParams("cuuid", "1347b284-668f-4853-b9f8-ee6e0108b4b3")
+                                .addParams("datetime", String.valueOf(DateUtils.getMillis(new Date())))
+                                .url(ApiManager.GET_CONNECTION)
+                                .build()
+                                .execute(new StringCallback() {
+                                    @Override
+                                    public void onError(Call call, Exception e) {
+                                        Logger.d("GET_CONNECTION " + e.getMessage());
+                                    }
+
+                                    @Override
+                                    public void onResponse(String response) {
+                                        Logger.d("GET_CONNECTION " + response);
+                                    }
+                                });*//*
+                    }
+                });*/
+
+
+        /*final String fileDir = Environment.getExternalStorageDirectory().getPath() + "/Download/";
         String mediaFileName = "media-new.xml";
-        final String systemFileName = "system-new.xml";
+        final String systemFileName = "system-new.xml";*/
 
 
         /*OkHttpUtils.get().addParams("id","2016060001").url(ApiManager.GET_CONFIG).build().execute(new FileCallback(fileDir,systemFileName) {
@@ -95,22 +298,22 @@ public class MainActivity extends AppCompatActivity {
             }
         });*/
 
-        Observable.interval(10, TimeUnit.SECONDS).subscribeOn(Schedulers.newThread())
+        /*Observable.interval(10, TimeUnit.SECONDS).subscribeOn(Schedulers.newThread())
                 .subscribe(new Observer<Long>() {
                     @Override
                     public void onCompleted() {
-                        Log.d("MainActivity","completed");
+                        Log.d("MainActivity", "completed");
                     }
 
                     @Override
                     public void onError(Throwable e) {
-                        Log.d("MainActivity","error");
+                        Log.d("MainActivity", "error");
                     }
 
                     @Override
                     public void onNext(Long number) {
                         //Log.d("MainActivity","hello world…."+number);
-                        Logger.d("hello world…."+number);
+                        Logger.d("hello world…." + number);
 
                         FormBody body = new FormBody.Builder().add("id", "2016060001")
                                 .add("cp", "1.0.0")
@@ -120,7 +323,7 @@ public class MainActivity extends AppCompatActivity {
                                 .url(ApiManager.GET_CONNECTION)
                                 .post(body)
                                 .build();
-                        /*client.newCall(request).enqueue(new Callback() {
+                        *//*client.newCall(request).enqueue(new Callback() {
                             @Override
                             public void onFailure(Call call, IOException e) {
                                 Logger.d("GET_CONNECTION " + e.getMessage());
@@ -130,7 +333,7 @@ public class MainActivity extends AppCompatActivity {
                             public void onResponse(Call call, Response response) throws IOException {
                                 Logger.d("GET_CONNECTION " + response.body().toString());
                             }
-                        });*/
+                        });*//*
                         Response response = null;
                         try {
                             response = mClient.newCall(request).execute();
@@ -146,13 +349,13 @@ public class MainActivity extends AppCompatActivity {
 
                         //body = new FormBody.Builder().add("id", "2016060001").build();
                         request = new Request.Builder()
-                                .url(ApiManager.GET_CONFIG+"?id=2016060001")
+                                .url(ApiManager.GET_CONFIG + "?id=2016060001")
                                 .build();
                         response = null;
                         try {
                             response = mClient.newCall(request).execute();
-                            if(response.isSuccessful()){
-                                Logger.d("OkHttpUtils execute "+response.code());
+                            if (response.isSuccessful()) {
+                                Logger.d("OkHttpUtils execute " + response.code());
                                 //Logger.d("OkHttpUtils execute "+response.body().contentLength());
                                 InputStream is = null;
                                 byte[] buf = new byte[2048];
@@ -172,7 +375,7 @@ public class MainActivity extends AppCompatActivity {
                                         sum += len;
                                         fos.write(buf, 0, len);
                                         final long finalSum = sum;
-                                        Logger.d("OkHttpUtils execute "+finalSum * 1.0f / total);
+                                        Logger.d("OkHttpUtils execute " + finalSum * 1.0f / total);
 
                                     }
                                     fos.flush();
@@ -186,15 +389,15 @@ public class MainActivity extends AppCompatActivity {
                                     } catch (IOException e) {
                                     }
                                 }
-                            }else{
-                                Logger.d("OkHttpUtils execute "+response.isSuccessful());
+                            } else {
+                                Logger.d("OkHttpUtils execute " + response.isSuccessful());
                             }
                         } catch (IOException e) {
                             e.printStackTrace();
                         }
 
 
-                        /*OkHttpUtils.post()
+                        *//*OkHttpUtils.post()
                                 .addParams("id", "2016060001")
                                 .addParams("cp", "1.0.0")
                                 .addParams("cuuid", "1347b284-668f-4853-b9f8-ee6e0108b4b3")
@@ -211,9 +414,9 @@ public class MainActivity extends AppCompatActivity {
                                     public void onResponse(String response) {
                                         Logger.d("GET_CONNECTION " + response);
                                     }
-                                });*/
+                                });*//*
                     }
-                });
+                });*/
 
 
         /*Observable.create(new Observable.OnSubscribe<String>() {
@@ -254,181 +457,230 @@ public class MainActivity extends AppCompatActivity {
         MediaBean mediaBean = pullXmlParseMedia(file2);*/
     }
 
-    public SystemBean pullXmlParseSystem(File file){
-        SystemBean systemBean = null;
-        try {
-            FileInputStream fis = new FileInputStream(file);
-            XmlPullParser parser = Xml.newPullParser();//由android.util.xml创建一个XmlPullParser实例
-            parser.setInput(fis,"UTF-8");//设置输入流并指明编码方式
-            int eventType = parser.getEventType();
-            while (eventType!=XmlPullParser.END_DOCUMENT){
-                switch (eventType){
-                    case XmlPullParser.START_DOCUMENT:
-                        systemBean = new SystemBean();
-                        break;
-                    case XmlPullParser.START_TAG:
-                        if(systemBean!=null){
-                            if(parser.getName().equalsIgnoreCase("opentime")){
-                                parser.next();
-                                systemBean.setOpentime(parser.getText());
-                            }else if(parser.getName().equalsIgnoreCase("opentime")){
-                                parser.next();
-                                systemBean.setOpentime(parser.getText());
-                            }else if(parser.getName().equalsIgnoreCase("closetime")){
-                                parser.next();
-                                systemBean.setClosetime(parser.getText());
-                            }else if(parser.getName().equalsIgnoreCase("sendtime")){
-                                parser.next();
-                                systemBean.setSendtime(parser.getText());
-                            }else if(parser.getName().equalsIgnoreCase("sendtype")){
-                                parser.next();
-                                if(StringUtils.isEmpty(parser.getText())){
-                                    systemBean.setSendtype(0);
-                                }else{
-                                    systemBean.setSendtype(Integer.parseInt(parser.getText()));
-                                }
-                            }else if(parser.getName().equalsIgnoreCase("mobilephone")){
-                                parser.next();
-                                systemBean.setMobilephone(parser.getText());
-                            }else if(parser.getName().equalsIgnoreCase("autoupdate")){
-                                parser.next();
-                                systemBean.setAutoupdate(parser.getText());
-                            }else if(parser.getName().equalsIgnoreCase("systime")){
-                                parser.next();
-                                systemBean.setSystime(parser.getText());
-                            }else if(parser.getName().equalsIgnoreCase("volume")){
-                                parser.next();
-                                if(StringUtils.isEmpty(parser.getText())){
-                                    systemBean.setSendtype(0);
-                                }else{
-                                    systemBean.setVolume(Integer.parseInt(parser.getText()));
-                                }
-                            }else if(parser.getName().equalsIgnoreCase("bright")){
-                                parser.next();
-                                if(StringUtils.isEmpty(parser.getText())){
-                                    systemBean.setSendtype(0);
-                                }else{
-                                    systemBean.setBright(Integer.parseInt(parser.getText()));
-                                }
-                            }else if(parser.getName().equalsIgnoreCase("weather")){
-                                parser.next();
-                                systemBean.setWeather(parser.getText());
-                            }else if(parser.getName().equalsIgnoreCase("romid")){
-                                parser.next();
-                                systemBean.setRomid(parser.getText());
-                            }else if(parser.getName().equalsIgnoreCase("server")){
-                                parser.next();
-                                systemBean.setServer(parser.getText());
-                            }else if(parser.getName().equalsIgnoreCase("media")){
-                                parser.next();
-                                systemBean.setMedia(parser.getText());
-                            }else if(parser.getName().equalsIgnoreCase("jpegshowtime")){
-                                parser.next();
-                                if(StringUtils.isEmpty(parser.getText())){
-                                    systemBean.setSendtype(0);
-                                }else{
-                                    systemBean.setJpegshowtime(Integer.parseInt(parser.getText()));
-                                }
+    @Override
+    public void surfaceCreated(SurfaceHolder holder) {
+        // 当SurfaceView中的Surface被创建的时候被调用
+        //在这里我们指定MediaPlayer在当前的Surface中进行播放
+        mPlayer.setDisplay(holder);
+        //在指定了MediaPlayer播放的容器后，我们就可以使用prepare或者prepareAsync来准备播放了
+        mPlayer.prepareAsync();
+    }
+
+    @Override
+    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        // 当Surface尺寸等参数改变时触发
+        Log.v("Surface Change:::", "surfaceChanged called");
+    }
+
+    @Override
+    public void surfaceDestroyed(SurfaceHolder holder) {
+        Log.v("Surface Destory:::", "surfaceDestroyed called");
+    }
+
+    @Override
+    public void onCompletion(MediaPlayer mp) {
+        // 当MediaPlayer播放完成后触发
+        Log.v("Play Over:::", "onComletion called");
+        mPlayer.reset();
+
+    }
+
+    @Override
+    public boolean onError(MediaPlayer mp, int whatError, int extra) {
+        Log.v("Play Error:::", "onError called");
+        switch (whatError) {
+            case MediaPlayer.MEDIA_ERROR_SERVER_DIED:
+                Log.v("Play Error:::", "MEDIA_ERROR_SERVER_DIED");
+                break;
+            case MediaPlayer.MEDIA_ERROR_UNKNOWN:
+                Log.v("Play Error:::", "MEDIA_ERROR_UNKNOWN");
+                break;
+            default:
+                break;
+        }
+        return false;
+    }
+
+    @Override
+    public boolean onInfo(MediaPlayer mp, int whatInfo, int extra) {
+        // 当一些特定信息出现或者警告时触发
+        switch(whatInfo){
+            case MediaPlayer.MEDIA_INFO_BAD_INTERLEAVING:
+                break;
+            case MediaPlayer.MEDIA_INFO_METADATA_UPDATE:
+                break;
+            case MediaPlayer.MEDIA_INFO_VIDEO_TRACK_LAGGING:
+                break;
+            case MediaPlayer.MEDIA_INFO_NOT_SEEKABLE:
+                break;
+        }
+        return false;
+    }
+
+    @Override
+    public void onPrepared(MediaPlayer mp) {
+        mPlayer.start();//播放视频
+    }
+
+    @Override
+    public void onSeekComplete(MediaPlayer mp) {
+        // seek操作完成时触发
+        Log.v("Seek Completion", "onSeekComplete called");
+    }
+
+    @Override
+    public void onVideoSizeChanged(MediaPlayer mp, int width, int height) {
+        // 当video大小改变时触发
+        //这个方法在设置player的source后至少触发一次
+        Log.v("Video Size Change", "onVideoSizeChanged called");
+    }
+
+
+    private void startHeartbeat() {
+        Observable.interval(0, 60, TimeUnit.SECONDS)
+                .map(new Func1<Long, String>() {
+                    @Override
+                    public String call(Long execNum) {
+                        Logger.d("运行次数：" + execNum);
+                        FormBody body = new FormBody.Builder().add("id", mEquipId)
+                                .add("cp", ApkUtils.getVersionName(MainActivity.this))
+                                .add("cuuid", mMediaBean.getTaskList().get(mPosition).getUuid())
+                                .add("datetime", String.valueOf(mMediaStartTime)).build();
+                        Request request = new Request.Builder()
+                                .url(ApiManager.GET_CONNECTION)
+                                .post(body)
+                                .build();
+                        Response response = null;
+                        try {
+                            response = mClient.newCall(request).execute();
+                            if (response.isSuccessful()) {
+                                return response.body().string();
                             }
+                        } catch (IOException e) {
+                            e.printStackTrace();
                         }
-                        break;
-                    case XmlPullParser.END_TAG:
-                        break;
-                }
-                eventType = parser.next();
-            }
-        } catch (FileNotFoundException e) {
-            e.printStackTrace();
-        } catch (XmlPullParserException e) {
-            e.printStackTrace();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        return  systemBean;
-    }
-
-    public SystemBean pullXmlParseSystem1(File file){
-        SystemBean systemBean = new SystemBean();
-        try {
-            FileInputStream fis = new FileInputStream(file);
-            XmlPullParser parser = Xml.newPullParser();//由android.util.xml创建一个XmlPullParser实例
-            parser.setInput(fis,"UTF-8");//设置输入流并指明编码方式
-            Field field = null;
-            while (parser.getEventType() != XmlResourceParser.END_DOCUMENT) {
-                if (parser.getEventType() == XmlResourceParser.START_TAG) {
-                    if (!parser.getName().equals("root")) {
-                        field = systemBean.getClass().getDeclaredField(parser.getName());
+                        return null;
                     }
-                } else if (parser.getEventType() == XmlPullParser.END_TAG) {
-                } else if (parser.getEventType() == XmlPullParser.TEXT) {
-                    field.setAccessible(true);
-                    if(field.getType().equals(int.class)){
-                        field.set(systemBean, Integer.parseInt(parser.getText()));
-                    }else{
-                        field.set(systemBean, parser.getText());
-                    }
-
-                }
-                parser.next();
-            }
-        } catch (FileNotFoundException e) {
-            e.printStackTrace();
-            systemBean = null;
-        } catch (XmlPullParserException e) {
-            e.printStackTrace();
-            systemBean = null;
-        } catch (IOException e) {
-            e.printStackTrace();
-            systemBean = null;
-        } catch (NoSuchFieldException e) {
-            e.printStackTrace();
-            systemBean = null;
-        } catch (IllegalAccessException e) {
-            e.printStackTrace();
-            systemBean = null;
-        }
-        return  systemBean;
-    }
-
-
-    public MediaBean pullXmlParseMedia(File file){
-        MediaBean mediaBean = new MediaBean();
-        //List<TaskBean> taskBeanList = new ArrayList<TaskBean>();
-        mediaBean.setTaskList(new ArrayList<TaskBean>());
-        try {
-            FileInputStream fis = new FileInputStream(file);
-            XmlPullParser parser = Xml.newPullParser();//由android.util.xml创建一个XmlPullParser实例
-            parser.setInput(fis,"UTF-8");//设置输入流并指明编码方式
-            int eventType = parser.getEventType();
-            while (eventType!=XmlPullParser.END_DOCUMENT){
-                switch (eventType){
-                    case XmlPullParser.START_TAG:
-                        if(parser.getName().equalsIgnoreCase("task")){
-                            mediaBean.setStyle(Integer.parseInt(parser.getAttributeValue(null,"style")));// 通过属性名来获取属性值
-                        }else if(parser.getName().equalsIgnoreCase("uuid")){
-                            TaskBean taskBean = new TaskBean();
-                            taskBean.setType(parser.getAttributeValue(null,"type"));
-                            taskBean.setPwd(parser.getAttributeValue(null,"pwd"));
-                            parser.next();
-                            taskBean.setUuid(parser.getText());
-                            mediaBean.getTaskList().add(taskBean);
+                })
+                .map(new Func1<String, String>() {
+                    @Override
+                    public String call(String msg) {
+                        if (msg != null && msg.length() == 3) {
+                            if (msg.charAt(2) == '1') {
+                                Logger.d("开始更新...");
+                                update();
+                            }
+                            return String.valueOf(msg.charAt(1));
                         }
-                        break;
-                    case XmlPullParser.END_TAG:
-                        break;
-                }
-                eventType = parser.next();
-            }
-        } catch (FileNotFoundException e) {
-            e.printStackTrace();
-        } catch (XmlPullParserException e) {
-            e.printStackTrace();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        return  mediaBean;
+                        return null;
+                    }
+                })
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(new Action1<String>() {
+                               @Override
+                               public void call(String flag) {
+                                  /* if (flag != null && flag.equals("0")) {
+                                       Logger.d("关闭屏幕...");
+                                   }
+                                   tvMain.setText(System.currentTimeMillis() + "");*/
+                               }
+                           }
+                );
     }
 
 
+    private void update(){
+        try {
+            //请求终端配置信息
+            Request request = new Request.Builder()
+                    .url(ApiManager.GET_CONFIG + "?id="+mEquipId)
+                    .build();
+            Response response = mClient.newCall(request).execute();
+            if (response.isSuccessful()) {
+                Logger.d("OkHttpUtils execute " + response.code());
+                InputStream is = null;
+                byte[] buf = new byte[2048];
+                int len = 0;
+                FileOutputStream fos = null;
+                try {
+                    is = response.body().byteStream();
+                    final long total = response.body().contentLength();
+                    long sum = 0;
+                    File dir = new File(mBaseFileDir);
+                    if (!dir.exists()) {
+                        dir.mkdirs();
+                    }
+                    File file = new File(dir, mSystemFileNameNew);
+                    fos = new FileOutputStream(file);
+                    while ((len = is.read(buf)) != -1) {
+                        sum += len;
+                        fos.write(buf, 0, len);
+                        /*final long finalSum = sum;
+                        Logger.d("OkHttpUtils execute " + finalSum * 1.0f / total);*/
+                    }
+                    fos.flush();
+                } finally {
+                    try {
+                        if (is != null) is.close();
+                    } catch (IOException e) {
+                    }
+                    try {
+                        if (fos != null) fos.close();
+                    } catch (IOException e) {
+                    }
+                }
+            } else {
+                Logger.d("OkHttpUtils execute " + response.isSuccessful());
+            }
 
+            //请求播放列表
+            request = new Request.Builder()
+                    .url(ApiManager.GET_PLAY_LIST_3 + "?id="+mEquipId)
+                    .build();
+            response = mClient.newCall(request).execute();
+            if (response.isSuccessful()) {
+                Logger.d("OkHttpUtils execute " + response.code());
+                InputStream is = null;
+                byte[] buf = new byte[2048];
+                int len = 0;
+                FileOutputStream fos = null;
+                try {
+                    is = response.body().byteStream();
+                    final long total = response.body().contentLength();
+                    long sum = 0;
+                    File dir = new File(mBaseFileDir);
+                    if (!dir.exists()) {
+                        dir.mkdirs();
+                    }
+                    File file = new File(dir, mMediaFileNameNew);
+                    fos = new FileOutputStream(file);
+                    while ((len = is.read(buf)) != -1) {
+                        sum += len;
+                        fos.write(buf, 0, len);
+                        /*final long finalSum = sum;
+                        Logger.d("OkHttpUtils execute " + finalSum * 1.0f / total);*/
+                    }
+                    fos.flush();
+                } finally {
+                    try {
+                        if (is != null) is.close();
+                    } catch (IOException e) {
+                    }
+                    try {
+                        if (fos != null) fos.close();
+                    } catch (IOException e) {
+                    }
+                }
+            } else {
+                Logger.d("OkHttpUtils execute " + response.isSuccessful());
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        //下载具体媒体（上报下载进度）
+
+        //上报播放任务更新完成
+    }
 }
