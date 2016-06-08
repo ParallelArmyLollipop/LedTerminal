@@ -54,8 +54,8 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     String mEquipId = "2016060001";
     String mMediaFileName = "media.xml";
     String mSystemFileName = "system.xml";
-    String mMediaFileNameNew = "media-new.xml";
-    String mSystemFileNameNew = "system-new.xml";
+    String mMediaFileNameTemp = "media-temp.xml";
+    String mSystemFileNameTemp = "system-temp.xml";
     String mBaseFileDir;
     SystemBean mSystemBean;
     MediaBean mMediaBean;
@@ -591,6 +591,8 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
 
 
     private void update(){
+        File systemFileTemp = null;
+        File mediaFileTemp = null;
         try {
             //请求终端配置信息
             Request request = new Request.Builder()
@@ -611,8 +613,8 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     if (!dir.exists()) {
                         dir.mkdirs();
                     }
-                    File file = new File(dir, mSystemFileNameNew);
-                    fos = new FileOutputStream(file);
+                    systemFileTemp = new File(dir, mSystemFileNameTemp);
+                    fos = new FileOutputStream(systemFileTemp);
                     while ((len = is.read(buf)) != -1) {
                         sum += len;
                         fos.write(buf, 0, len);
@@ -653,8 +655,8 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     if (!dir.exists()) {
                         dir.mkdirs();
                     }
-                    File file = new File(dir, mMediaFileNameNew);
-                    fos = new FileOutputStream(file);
+                    mediaFileTemp = new File(dir, mMediaFileNameTemp);
+                    fos = new FileOutputStream(mediaFileTemp);
                     while ((len = is.read(buf)) != -1) {
                         sum += len;
                         fos.write(buf, 0, len);
@@ -675,12 +677,76 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             } else {
                 Logger.d("OkHttpUtils execute " + response.isSuccessful());
             }
+
+            //下载具体媒体（上报下载进度）
+            SystemBean sb = XmlPullManager.pullXmlParseSystem(systemFileTemp);
+            MediaBean mb = XmlPullManager.pullXmlParseMedia(mediaFileTemp);
+            String mediaUrl = "http://"+sb.getMedia()+"/";
+            //http://61.129.70.157:8089/Media/upload/a58ec83b-8818-4a18-b6a5-8bc9453e5beb.avi
+            for (TaskBean tb : mb.getTaskList()) {
+                String fileName = tb.getUuid() + ".avi";
+                if(tb.getType().equalsIgnoreCase(Constants.TASK_TYPE.JPEG)){
+                    fileName = tb.getUuid() + "." + tb.getType();
+                }
+                File file = new File(mBaseFileDir,fileName);
+                if(!file.exists()){
+                    //下载
+                    request = new Request.Builder()
+                            .url(mediaUrl + "upload/"+fileName)
+                            .build();
+                    response = mClient.newCall(request).execute();
+                    if (response.isSuccessful()) {
+                        Logger.d("OkHttpUtils execute " + response.code());
+                        InputStream is = null;
+                        byte[] buf = new byte[2048];
+                        int len = 0;
+                        FileOutputStream fos = null;
+                        try {
+                            is = response.body().byteStream();
+                            final long total = response.body().contentLength();
+                            long sum = 0;
+                            File dir = new File(mBaseFileDir);
+                            if (!dir.exists()) {
+                                dir.mkdirs();
+                            }
+                            mediaFileTemp = new File(dir, mMediaFileNameTemp);
+                            fos = new FileOutputStream(mediaFileTemp);
+                            while ((len = is.read(buf)) != -1) {
+                                sum += len;
+                                fos.write(buf, 0, len);
+                                final long finalSum = sum;
+                                Logger.d("OkHttpUtils execute " + finalSum * 1.0f / total);
+                            }
+                            fos.flush();
+                        } finally {
+                            try {
+                                if (is != null) is.close();
+                            } catch (IOException e) {
+                            }
+                            try {
+                                if (fos != null) fos.close();
+                            } catch (IOException e) {
+                            }
+                        }
+                    } else {
+                        Logger.d("OkHttpUtils execute " + response.isSuccessful());
+                    }
+                }
+            }
+
+            //上报播放任务更新完成
+            FormBody body = new FormBody.Builder().add("id", mEquipId)
+                    .add("success", "1").build();
+            request = new Request.Builder()
+                    .url(ApiManager.SUBMIT)
+                    .post(body)
+                    .build();
+            response = mClient.newCall(request).execute();
+            if (response.isSuccessful()) {
+
+            }
         } catch (IOException e) {
             e.printStackTrace();
         }
-
-        //下载具体媒体（上报下载进度）
-
-        //上报播放任务更新完成
     }
 }
