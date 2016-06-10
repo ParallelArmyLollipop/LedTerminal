@@ -1,7 +1,15 @@
 <root>
 	<normal num="1">
 		<task style="3">
-			<uuid type="jpeg" pwd="3349760">sx</uuid>
+			<uuid type="jpeg" pwd="3349760">2a771ed9-3542-48d6-880a-d441bd5b4df8</uuid>
+			<uuid type="jpeg" pwd="3349760">64fe6518-25b9-473b-82f4-2af920570fdd</uuid>
+			<uuid type="video" pwd="3349760">2dc70e2c-29e6-4c0d-b682-c5a9529849c3</uuid>
+			<uuid type="jpeg" pwd="3349760">591d541c-fb78-45eb-a90d-4c811eee462f</uuid>
+			<uuid type="video" pwd="3349760">32ceaf55-fb09-4f6f-8e64-27d7b551afed</uuid>
+			<uuid type="jpeg" pwd="3349760">0843af9d-4f5e-42ec-8d11-368ee8ffe0b7</uuid>
+			<uuid type="video" pwd="3349760">b4be6066-e07f-452c-83f8-81265f1d3e2b</uuid>
+			<uuid type="video" pwd="3349760">5468b8ad-7209-4895-ab43-b73a3af74e5c</uuid>
+			<uuid type="jpeg" pwd="3349760">1428ac2f-bdec-45a7-9cad-a79686cf5862</uuid>
 		</task>
 	</normal>
 	<insert num="0"/>
