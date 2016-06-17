@@ -20,6 +20,7 @@ import com.eric.terminal.led.Manager.ApiManager;
 import com.eric.terminal.led.Manager.Constants;
 import com.eric.terminal.led.Manager.XmlPullManager;
 import com.orhanobut.logger.Logger;
+import com.shiki.okttp.OkHttpUtils;
 import com.shiki.utils.ApkUtils;
 import com.shiki.utils.DateUtils;
 
@@ -27,6 +28,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.RandomAccessFile;
 import java.util.Date;
 import java.util.concurrent.TimeUnit;
 
@@ -38,9 +40,11 @@ import okhttp3.Request;
 import okhttp3.Response;
 import rx.Observable;
 import rx.Observer;
+import rx.Subscriber;
 import rx.android.schedulers.AndroidSchedulers;
 import rx.functions.Action1;
 import rx.functions.Func1;
+import rx.functions.Func2;
 import rx.schedulers.Schedulers;
 
 public class MainActivity extends AppCompatActivity implements SurfaceHolder.Callback,MediaPlayer.OnCompletionListener
@@ -115,7 +119,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         }
 
         //播放默认配置文件中媒体
-        if(mMediaBean!=null){
+        /*if(mMediaBean!=null){
             //设置任务style（暂时全部全屏）
             switch (mMediaBean.getStyle()){
                 case Constants.TASK_STYLE.FULL_SCREEN:
@@ -131,10 +135,10 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     break;
                 }
             }
-        }
+        }*/
 
         //起心跳获取是否需要更新
-        //startHeartbeat();
+        startHeartbeat();
     }
 
     private boolean showMedia(TaskBean tb){
@@ -277,17 +281,12 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     @Override
                     public String call(Long execNum) {
                         Logger.d("运行次数：" + execNum);
-                        FormBody body = new FormBody.Builder().add("id", mEquipId)
-                                .add("cp", ApkUtils.getVersionName(MainActivity.this))
-                                .add("cuuid", mMediaBean.getTaskList().get(mPosition).getUuid())
-                                .add("datetime", String.valueOf(mMediaStartTime)).build();
-                        Request request = new Request.Builder()
-                                .url(ApiManager.GET_CONNECTION)
-                                .post(body)
-                                .build();
-                        Response response = null;
                         try {
-                            response = mClient.newCall(request).execute();
+                            Response response = OkHttpUtils.post().addParams("id", mEquipId)
+                                    .addParams("cp", ApkUtils.getVersionName(MainActivity.this))
+                                    .addParams("cuuid", mMediaBean.getTaskList().get(mPosition).getUuid())
+                                    //.addParams("datetime", String.valueOf(mMediaStartTime))
+                                    .url(ApiManager.GET_CONNECTION).build().execute();
                             if (response.isSuccessful()) {
                                 return response.body().string();
                             }
@@ -301,27 +300,200 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     @Override
                     public String call(String msg) {
                         if (msg != null && msg.length() == 3) {
-                            if (msg.charAt(2) == '1') {
-                                Logger.d("开始更新...");
-                                update();
-                            }
                             return String.valueOf(msg.charAt(1));
                         }
                         return null;
                     }
                 })
+                .filter(new Func1<String, Boolean>() {
+                    @Override
+                    public Boolean call(String s) {
+                        if(s!=null&&s.equalsIgnoreCase("1")){
+                            return true;
+                        }
+                        return false;
+                    }
+                })
+                .map(new Func1<String, MediaBean>() {
+
+                    @Override
+                    public MediaBean call(String s) {
+                        //请求播放列表
+                        InputStream is = null;
+                        FileOutputStream fos = null;
+                        try {
+                            Response response = OkHttpUtils.get().addParams("id",mEquipId)
+                                    .url(ApiManager.GET_PLAY_LIST_3).build().execute();
+                            if (response.isSuccessful()) {
+                                byte[] buf = new byte[2048];
+                                int len = 0;
+                                is = response.body().byteStream();
+                                final long total = response.body().contentLength();
+                                long sum = 0;
+                                File dir = new File(mBaseFileDir);
+                                if (!dir.exists()) {
+                                    dir.mkdirs();
+                                }
+                                File mediaFileTemp = new File(dir, mMediaFileNameTemp);
+                                fos = new FileOutputStream(mediaFileTemp);
+                                while ((len = is.read(buf)) != -1) {
+                                    sum += len;
+                                    fos.write(buf, 0, len);
+                                    /*final long finalSum = sum;
+                                    Logger.d("OkHttpUtils execute " + finalSum * 1.0f / total);*/
+                                }
+                                fos.flush();
+                                return XmlPullManager.pullXmlParseMedia(mediaFileTemp);
+                            }else{
+                                Logger.d("OkHttpUtils execute " + response.isSuccessful());
+                            }
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        } finally {
+                            try {
+                                if (is != null) is.close();
+                            } catch (IOException e) {
+                            }
+                            try {
+                                if (fos != null) fos.close();
+                            } catch (IOException e) {
+                            }
+                        }
+                        return null;
+                    }
+                })
+                .flatMap(new Func1<MediaBean, Observable<TaskBean>>() {
+                    @Override
+                    public Observable<TaskBean> call(MediaBean mediaBean) {
+                        if(mediaBean!=null){
+                            return Observable.from(mediaBean.getTaskList());
+                        }
+                        return null;
+                    }
+                })
+                .map(new Func1<TaskBean, String>() {
+                    @Override
+                    public String call(TaskBean tb) {
+                        if(tb!=null){
+                            String fileName = tb.getUuid() + ".avi";
+                            if(tb.getType().equalsIgnoreCase(Constants.TASK_TYPE.JPEG)){
+                                fileName = tb.getUuid() + ".jpg";
+                            }
+                            File file = new File(mBaseFileDir,fileName);
+                            if(!file.exists()){
+                                //判断是否需要断点续传
+                                File fileTemp = new File(mBaseFileDir,fileName+".tmp");
+                                String url = "http://61.129.70.157:8089/Media/upload/"+fileName;
+                                Request request = null;
+                                InputStream is = null;
+                                RandomAccessFile raf;
+                                long fileTempLength = 0;
+                                Response response;
+                                try {
+                                    if (fileTemp.exists()) {
+                                        fileTempLength = fileTemp.length();
+                                        response = OkHttpUtils.get().addHeader("range", "bytes=" + fileTempLength + "-")
+                                                .url(url).build().execute();
+                                    } else {
+                                        response = OkHttpUtils.get()
+                                                .url(url).build().execute();
+                                    }
+                                    if (response.isSuccessful()) {
+                                        byte[] buf = new byte[2048];
+                                        int len;
+                                        is = response.body().byteStream();
+                                        final long total = response.body().contentLength();
+                                        long sum = 0;
+                                        File dir = new File(mBaseFileDir);
+                                        if (!dir.exists()) {
+                                            dir.mkdirs();
+                                        }
+                                        File mediaFileTemp = new File(dir, fileName + ".tmp");
+                                        raf = new RandomAccessFile(mediaFileTemp, "rw");
+                                        raf.seek(fileTempLength);
+
+                                        //fos = new FileOutputStream(mediaFile);
+
+                                        while ((len = is.read(buf)) != -1) {
+                                            sum += len;
+                                            //fos.write(buf, 0, len);
+
+                                            raf.write(buf, 0, len);
+
+                                    /*final long finalSum = sum;
+                                    Logger.d("OkHttpUtils execute " + finalSum * 1.0f / total);*/
+                                        }
+
+                                        //fos.flush();
+                                        //删除tmp
+                                        mediaFileTemp.renameTo(file);
+                                        response.body().close();
+                                        return fileName;
+                                    }
+                                } catch (IOException e) {
+                                    e.printStackTrace();
+                                }
+                            }
+                        }
+                        return null;
+                    }
+                })
+                //总共重试10次，重试间隔500毫秒
+                //.retryWhen(new RetryWithDelay(10,500))
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(new Action1<String>() {
-                               @Override
-                               public void call(String flag) {
-                                  /* if (flag != null && flag.equals("0")) {
-                                       Logger.d("关闭屏幕...");
-                                   }
-                                   tvMain.setText(System.currentTimeMillis() + "");*/
-                               }
-                           }
+                .subscribe(new Subscriber<String>() {
+                    @Override
+                    public void onCompleted() {
+                        Logger.d("onCompleted");
+                    }
+
+                    @Override
+                    public void onError(Throwable e) {
+                        Logger.d("onError:"+e.getMessage());
+                    }
+
+                    @Override
+                    public void onNext(String s) {
+                        if(s!=null){
+                            Logger.d(s+":onNext");
+                        }else{
+                            Logger.d("onNext");
+                        }
+
+                    }
+                }
                 );
+    }
+
+    public class RetryWithDelay implements
+            Func1<Observable<? extends Throwable>, Observable<?>> {
+
+        private final int maxRetries;
+        private final int retryDelayMillis;
+        private int retryCount;
+
+        public RetryWithDelay(int maxRetries, int retryDelayMillis) {
+            this.maxRetries = maxRetries;
+            this.retryDelayMillis = retryDelayMillis;
+        }
+
+        @Override
+        public Observable<?> call(Observable<? extends Throwable> attempts) {
+            return attempts
+                    .flatMap(new Func1<Throwable, Observable<?>>() {
+                        @Override
+                        public Observable<?> call(Throwable throwable) {
+                            if (++retryCount <= maxRetries) {
+                                // When this Observable calls onNext, the original Observable will be retried (i.e. re-subscribed).
+                                return Observable.timer(retryDelayMillis,
+                                        TimeUnit.MILLISECONDS);
+                            }
+                            // Max retries hit. Just pass the error along.
+                            return Observable.error(throwable);
+                        }
+                    });
+        }
     }
 
 
