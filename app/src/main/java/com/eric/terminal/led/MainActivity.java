@@ -29,7 +29,9 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import butterknife.Bind;
@@ -138,7 +140,47 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         }*/
 
         //起心跳获取是否需要更新
-        startHeartbeat();
+        startHeartbeat1();
+
+        /*Observable.interval(0, 60, TimeUnit.SECONDS).map(new Func1<Long, MediaBean>() {
+            @Override
+            public MediaBean call(Long aLong) {
+                MediaBean mb = new MediaBean();
+                List<TaskBean> tbList = new ArrayList<>();
+                for (int i=0;i<10;i++){
+                    TaskBean tb = new TaskBean();
+                    tb.setUuid("uuid:"+i);
+                    tbList.add(tb);
+                }
+                mb.setTaskList(tbList);
+                return mb;
+            }
+        }).flatMap(new Func1<MediaBean, Observable<TaskBean>>() {
+            @Override
+            public Observable<TaskBean> call(MediaBean mediaBean) {
+                return Observable.from(mediaBean.getTaskList());
+            }
+        }).map(new Func1<TaskBean, String>() {
+            @Override
+            public String call(TaskBean taskBean) {
+                return taskBean.getUuid()+"----";
+            }
+        }).subscribe(new Subscriber<String>() {
+            @Override
+            public void onCompleted() {
+                Logger.d("onCompleted");
+            }
+
+            @Override
+            public void onError(Throwable e) {
+                Logger.d("onError");
+            }
+
+            @Override
+            public void onNext(String s) {
+                Logger.d("onNext:"+s);
+            }
+        });*/
     }
 
     private boolean showMedia(TaskBean tb){
@@ -277,6 +319,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
 
     private void startHeartbeat() {
         Observable.interval(0, 60, TimeUnit.SECONDS)
+                .subscribeOn(Schedulers.io())
                 .map(new Func1<Long, String>() {
                     @Override
                     public String call(Long execNum) {
@@ -288,7 +331,9 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                                     //.addParams("datetime", String.valueOf(mMediaStartTime))
                                     .url(ApiManager.GET_CONNECTION).build().execute();
                             if (response.isSuccessful()) {
-                                return response.body().string();
+                                String msg = response.body().string();
+                                response.body().close();
+                                return msg;
                             }
                         } catch (IOException e) {
                             e.printStackTrace();
@@ -296,22 +341,22 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                         return null;
                     }
                 })
+                .filter(new Func1<String, Boolean>() {
+                    @Override
+                    public Boolean call(String msg) {
+                        return msg != null && msg.length() == 3;
+                    }
+                })
                 .map(new Func1<String, String>() {
                     @Override
                     public String call(String msg) {
-                        if (msg != null && msg.length() == 3) {
-                            return String.valueOf(msg.charAt(1));
-                        }
-                        return null;
+                        return String.valueOf(msg.charAt(1));
                     }
                 })
                 .filter(new Func1<String, Boolean>() {
                     @Override
                     public Boolean call(String s) {
-                        if(s!=null&&s.equalsIgnoreCase("1")){
-                            return true;
-                        }
-                        return false;
+                        return s.equalsIgnoreCase("1");
                     }
                 })
                 .map(new Func1<String, MediaBean>() {
@@ -343,12 +388,14 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                                     Logger.d("OkHttpUtils execute " + finalSum * 1.0f / total);*/
                                 }
                                 fos.flush();
+                                response.body().close();
                                 return XmlPullManager.pullXmlParseMedia(mediaFileTemp);
                             }else{
                                 Logger.d("OkHttpUtils execute " + response.isSuccessful());
                             }
                         } catch (IOException e) {
                             e.printStackTrace();
+                            return null;
                         } finally {
                             try {
                                 if (is != null) is.close();
@@ -371,78 +418,123 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                         return null;
                     }
                 })
-                .map(new Func1<TaskBean, String>() {
+                .subscribeOn(Schedulers.io())
+                .map(new Func1<TaskBean, Integer>() {
                     @Override
-                    public String call(TaskBean tb) {
-                        if(tb!=null){
+                    public Integer call(TaskBean tb) {
+                        final Integer[] isSuccess = {0};
+                        if (tb != null) {
                             String fileName = tb.getUuid() + ".avi";
-                            if(tb.getType().equalsIgnoreCase(Constants.TASK_TYPE.JPEG)){
+                            if (tb.getType().equalsIgnoreCase(Constants.TASK_TYPE.JPEG)) {
                                 fileName = tb.getUuid() + ".jpg";
                             }
-                            File file = new File(mBaseFileDir,fileName);
-                            if(!file.exists()){
-                                //判断是否需要断点续传
-                                File fileTemp = new File(mBaseFileDir,fileName+".tmp");
-                                String url = "http://61.129.70.157:8089/Media/upload/"+fileName;
-                                Request request = null;
-                                InputStream is = null;
-                                RandomAccessFile raf;
-                                long fileTempLength = 0;
-                                Response response;
-                                try {
-                                    if (fileTemp.exists()) {
-                                        fileTempLength = fileTemp.length();
-                                        response = OkHttpUtils.get().addHeader("range", "bytes=" + fileTempLength + "-")
-                                                .url(url).build().execute();
-                                    } else {
-                                        response = OkHttpUtils.get()
-                                                .url(url).build().execute();
-                                    }
-                                    if (response.isSuccessful()) {
-                                        byte[] buf = new byte[2048];
-                                        int len;
-                                        is = response.body().byteStream();
-                                        final long total = response.body().contentLength();
-                                        long sum = 0;
-                                        File dir = new File(mBaseFileDir);
-                                        if (!dir.exists()) {
-                                            dir.mkdirs();
-                                        }
-                                        File mediaFileTemp = new File(dir, fileName + ".tmp");
-                                        raf = new RandomAccessFile(mediaFileTemp, "rw");
-                                        raf.seek(fileTempLength);
+                            final String finalFileName = fileName;
+                            Observable.just(tb)
+                                    .flatMap(new Func1<TaskBean, Observable<String>>() {
+                                        @Override
+                                        public Observable<String> call(TaskBean taskBean) {
+                                            File file = new File(mBaseFileDir, finalFileName);
+                                            if (!file.exists()) {
+                                                //判断是否需要断点续传
+                                                File fileTemp = new File(mBaseFileDir, finalFileName + ".tmp");
+                                                String url = "http://61.129.70.157:8089/Media/upload/" + finalFileName;
+                                                Request request = null;
+                                                InputStream is = null;
+                                                RandomAccessFile raf;
+                                                long fileTempLength = 0;
+                                                Response response;
+                                                try {
+                                                    if (fileTemp.exists()) {
+                                                        fileTempLength = fileTemp.length();
+                                                        response = OkHttpUtils.get().addHeader("range", "bytes=" + fileTempLength + "-")
+                                                                .url(url).build().execute();
+                                                    } else {
+                                                        response = OkHttpUtils.get()
+                                                                .url(url).build().execute();
+                                                    }
+                                                    if (response.isSuccessful()) {
+                                                        byte[] buf = new byte[2048];
+                                                        int len;
+                                                        is = response.body().byteStream();
+                                                        final long total = response.body().contentLength();
+                                                        long sum = 0;
+                                                        File dir = new File(mBaseFileDir);
+                                                        if (!dir.exists()) {
+                                                            dir.mkdirs();
+                                                        }
+                                                        File mediaFileTemp = new File(dir, finalFileName + ".tmp");
+                                                        raf = new RandomAccessFile(mediaFileTemp, "rw");
+                                                        raf.seek(fileTempLength);
 
-                                        //fos = new FileOutputStream(mediaFile);
+                                                        //fos = new FileOutputStream(mediaFile);
 
-                                        while ((len = is.read(buf)) != -1) {
-                                            sum += len;
-                                            //fos.write(buf, 0, len);
+                                                        while ((len = is.read(buf)) != -1) {
+                                                            sum += len;
+                                                            //fos.write(buf, 0, len);
 
-                                            raf.write(buf, 0, len);
+                                                            raf.write(buf, 0, len);
 
                                     /*final long finalSum = sum;
                                     Logger.d("OkHttpUtils execute " + finalSum * 1.0f / total);*/
-                                        }
+                                                        }
 
-                                        //fos.flush();
-                                        //删除tmp
-                                        mediaFileTemp.renameTo(file);
-                                        response.body().close();
-                                        return fileName;
-                                    }
-                                } catch (IOException e) {
-                                    e.printStackTrace();
+                                                        //fos.flush();
+                                                        //删除tmp
+                                                        mediaFileTemp.renameTo(file);
+                                                        response.body().close();
+                                                    }
+                                                } catch (IOException e) {
+                                                    //e.printStackTrace();
+                                                    return Observable.error(e);
+                                                }
+                                            }
+                                            return Observable.just("");
+                                        }
+                                    })
+                                    .retryWhen(new Func1<Observable<? extends Throwable>, Observable<?>>() {
+                                @Override
+                                public Observable<?> call(Observable<? extends Throwable> errors) {
+                                    return errors.zipWith(Observable.range(1, 10), new Func2<Throwable, Integer, Integer>() {
+                                        @Override
+                                        public Integer call(Throwable throwable, Integer integer) {
+                                            Logger.d("重试:" + integer);
+                                            return integer;
+                                        }
+                                    });
                                 }
-                            }
+                            }).subscribe(new Subscriber<String>() {
+                                @Override
+                                public void onCompleted() {
+                                    Logger.d("Download onCompleted:"+finalFileName);
+                                }
+
+                                @Override
+                                public void onError(Throwable e) {
+                                    Logger.d("Download onError:"+finalFileName);
+                                }
+
+                                @Override
+                                public void onNext(String s) {
+                                    isSuccess[0] = 1;
+                                    Logger.d("Download onNext:"+finalFileName);
+                                }
+                            });
                         }
-                        return null;
+                        return isSuccess[0];
+                    }
+                })
+                .reduce(new Func2<Integer, Integer, Integer>() {
+                    @Override
+                    public Integer call(Integer integer, Integer integer2) {
+                        Logger.d("reduce:"+integer+"*"+integer2);
+                        return integer*integer2;
                     }
                 })
                 //总共重试10次，重试间隔500毫秒
                 //.retryWhen(new RetryWithDelay(10,500))
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(new Subscriber<String>() {
+                .subscribe(new Subscriber<Integer>() {
                     @Override
                     public void onCompleted() {
                         Logger.d("onCompleted");
@@ -454,16 +546,263 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     }
 
                     @Override
-                    public void onNext(String s) {
-                        if(s!=null){
-                            Logger.d(s+":onNext");
-                        }else{
-                            Logger.d("onNext");
-                        }
-
+                    public void onNext(Integer i) {
+                        Logger.d("onNext:"+i);
                     }
-                }
-                );
+                });
+    }
+
+    private void startHeartbeat1() {
+        Observable.interval(0, 60, TimeUnit.SECONDS)
+                .subscribeOn(Schedulers.io())
+                .map(new Func1<Long, String>() {
+                    @Override
+                    public String call(Long execNum) {
+                        Logger.d("运行次数：" + execNum);
+                        try {
+                            Response response = OkHttpUtils.post().addParams("id", mEquipId)
+                                    .addParams("cp", ApkUtils.getVersionName(MainActivity.this))
+                                    .addParams("cuuid", mMediaBean.getTaskList().get(mPosition).getUuid())
+                                    //.addParams("datetime", String.valueOf(mMediaStartTime))
+                                    .url(ApiManager.GET_CONNECTION).build().execute();
+                            if (response.isSuccessful()) {
+                                String msg = response.body().string();
+                                response.body().close();
+                                return msg;
+                            }
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                        return null;
+                    }
+                })
+                .filter(new Func1<String, Boolean>() {
+                    @Override
+                    public Boolean call(String msg) {
+                        return msg != null && msg.length() == 3;
+                    }
+                })
+                .map(new Func1<String, String>() {
+                    @Override
+                    public String call(String msg) {
+                        return String.valueOf(msg.charAt(1));
+                    }
+                })
+                .filter(new Func1<String, Boolean>() {
+                    @Override
+                    public Boolean call(String s) {
+                        return s.equalsIgnoreCase("1");
+                    }
+                })
+                .map(new Func1<String, MediaBean>() {
+
+                    @Override
+                    public MediaBean call(String s) {
+                        //请求播放列表
+                        InputStream is = null;
+                        FileOutputStream fos = null;
+                        try {
+                            Response response = OkHttpUtils.get().addParams("id",mEquipId)
+                                    .url(ApiManager.GET_PLAY_LIST_3).build().execute();
+                            if (response.isSuccessful()) {
+                                byte[] buf = new byte[2048];
+                                int len = 0;
+                                is = response.body().byteStream();
+                                final long total = response.body().contentLength();
+                                long sum = 0;
+                                File dir = new File(mBaseFileDir);
+                                if (!dir.exists()) {
+                                    dir.mkdirs();
+                                }
+                                File mediaFileTemp = new File(dir, mMediaFileNameTemp);
+                                fos = new FileOutputStream(mediaFileTemp);
+                                while ((len = is.read(buf)) != -1) {
+                                    sum += len;
+                                    fos.write(buf, 0, len);
+                                    /*final long finalSum = sum;
+                                    Logger.d("OkHttpUtils execute " + finalSum * 1.0f / total);*/
+                                }
+                                fos.flush();
+                                response.body().close();
+                                return XmlPullManager.pullXmlParseMedia(mediaFileTemp);
+                            }else{
+                                Logger.d("OkHttpUtils execute " + response.isSuccessful());
+                            }
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                            return null;
+                        } finally {
+                            try {
+                                if (is != null) is.close();
+                            } catch (IOException e) {
+                            }
+                            try {
+                                if (fos != null) fos.close();
+                            } catch (IOException e) {
+                            }
+                        }
+                        return null;
+                    }
+                })
+                .map(new Func1<MediaBean, Boolean>() {
+                    @Override
+                    public Boolean call(MediaBean mediaBean) {
+                        final boolean[] isDone = {false};
+                        Observable.from(mediaBean.getTaskList()).flatMap(new Func1<TaskBean, Observable<Integer>>() {
+                            @Override
+                            public Observable<Integer> call(TaskBean tb) {
+                                String fileName = tb.getUuid() + ".avi";
+                                if (tb.getType().equalsIgnoreCase(Constants.TASK_TYPE.JPEG)) {
+                                    fileName = tb.getUuid() + ".jpg";
+                                }
+                                final String finalFileName = fileName;
+                                final Integer[] isSuccess = {0};
+                                Observable.just(tb)
+                                        .flatMap(new Func1<TaskBean, Observable<String>>() {
+                                            @Override
+                                            public Observable<String> call(TaskBean taskBean) {
+                                                File file = new File(mBaseFileDir, finalFileName);
+                                                if (!file.exists()) {
+                                                    //判断是否需要断点续传
+                                                    File fileTemp = new File(mBaseFileDir, finalFileName + ".tmp");
+                                                    String url = "http://61.129.70.157:8089/Media/upload/" + finalFileName;
+                                                    Request request = null;
+                                                    InputStream is = null;
+                                                    RandomAccessFile raf;
+                                                    long fileTempLength = 0;
+                                                    Response response;
+                                                    try {
+                                                        if (fileTemp.exists()) {
+                                                            fileTempLength = fileTemp.length();
+                                                            response = OkHttpUtils.get().addHeader("range", "bytes=" + fileTempLength + "-")
+                                                                    .url(url).build().execute();
+                                                        } else {
+                                                            response = OkHttpUtils.get()
+                                                                    .url(url).build().execute();
+                                                        }
+                                                        if (response.isSuccessful()) {
+                                                            byte[] buf = new byte[2048];
+                                                            int len;
+                                                            is = response.body().byteStream();
+                                                            final long total = response.body().contentLength();
+                                                            long sum = 0;
+                                                            File dir = new File(mBaseFileDir);
+                                                            if (!dir.exists()) {
+                                                                dir.mkdirs();
+                                                            }
+                                                            File mediaFileTemp = new File(dir, finalFileName + ".tmp");
+                                                            raf = new RandomAccessFile(mediaFileTemp, "rw");
+                                                            raf.seek(fileTempLength);
+
+                                                            //fos = new FileOutputStream(mediaFile);
+
+                                                            while ((len = is.read(buf)) != -1) {
+                                                                sum += len;
+                                                                //fos.write(buf, 0, len);
+
+                                                                raf.write(buf, 0, len);
+
+                                    /*final long finalSum = sum;
+                                    Logger.d("OkHttpUtils execute " + finalSum * 1.0f / total);*/
+                                                            }
+
+                                                            //fos.flush();
+                                                            //删除tmp
+                                                            mediaFileTemp.renameTo(file);
+                                                            response.body().close();
+                                                        }
+                                                    } catch (IOException e) {
+                                                        //e.printStackTrace();
+                                                        return Observable.error(e);
+                                                    }
+                                                }
+                                                return Observable.just("");
+                                            }
+                                        })
+                                        .retryWhen(new Func1<Observable<? extends Throwable>, Observable<?>>() {
+                                            @Override
+                                            public Observable<?> call(Observable<? extends Throwable> errors) {
+                                                return errors.zipWith(Observable.range(1, 10), new Func2<Throwable, Integer, Integer>() {
+                                                    @Override
+                                                    public Integer call(Throwable throwable, Integer integer) {
+                                                        Logger.d("重试:" + integer);
+                                                        return integer;
+                                                    }
+                                                });
+                                            }
+                                        }).subscribe(new Subscriber<String>() {
+                                    @Override
+                                    public void onCompleted() {
+                                        Logger.d("Download onCompleted:" + finalFileName);
+                                    }
+
+                                    @Override
+                                    public void onError(Throwable e) {
+                                        isSuccess[0] = 0;
+                                        Logger.d("Download onError:" + finalFileName);
+                                    }
+
+                                    @Override
+                                    public void onNext(String s) {
+                                        isSuccess[0] = 1;
+                                        Logger.d("Download onNext:" + finalFileName);
+                                    }
+                                });
+                                return Observable.just(isSuccess[0]);
+                            }
+                        }).scan(new Func2<Integer, Integer, Integer>() {
+                            @Override
+                            public Integer call(Integer integer, Integer integer2) {
+                                Logger.d("scan:"+integer * integer2);
+                                return integer * integer2;
+                            }
+                        }).flatMap(new Func1<Integer, Observable<String>>() {
+                            @Override
+                            public Observable<String> call(Integer integer) {
+                                Logger.d("flatMap:"+integer);
+                                if(integer == 0){
+                                    return Observable.error(new Exception());
+                                }
+                                return Observable.just("OK");
+                            }
+                        }).subscribe(new Subscriber<String>() {
+                            @Override
+                            public void onCompleted() {
+                                Logger.d("from onCompleted");
+                                isDone[0] = true;
+                            }
+
+                            @Override
+                            public void onError(Throwable e) {
+                                Logger.d("from onError");
+                                isDone[0] = false;
+                            }
+
+                            @Override
+                            public void onNext(String s) {
+
+                            }
+                        });
+                        return isDone[0];
+                    }
+                })
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(new Subscriber<Boolean>() {
+                    @Override
+                    public void onCompleted() {
+                        Logger.d("onCompleted");
+                    }
+
+                    @Override
+                    public void onError(Throwable e) {
+                        Logger.d("onError:"+e.getMessage());
+                    }
+
+                    @Override
+                    public void onNext(Boolean b) {
+                        Logger.d("onNext:"+b);
+                    }
+                });
     }
 
     public class RetryWithDelay implements
